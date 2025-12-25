@@ -38,3 +38,9 @@ $
     c &= A\
     "Quadratic formula": t &= (-b plus.minus sqrt(b^2 - 4a c)) / (2a)
 $
+
+== Quadratic Bezier Derivative
+$
+    Q(A, B, C, t) &= (A - 2B + C)t^2 + (2B - 2A)t + A \
+    bold(Q'(A, B, C, t) &= 2(A - 2B + C)t + (2B - 2A))
+$

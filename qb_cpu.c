@@ -1,4 +1,9 @@
+// NOTE: This was my first attempt without really looking at any resource in-depth.
+
 #include <assert.h>
+#include <float.h>
+#include <math.h>
+#include <stdlib.h>
 #include <string.h>
 #include "vendor/include/raylib.h"
 #include "vendor/include/raymath.h"
@@ -12,8 +17,7 @@ typedef struct {
     int count, capacity;
 } Points;
 
-#define CELL_FILL_FACTOR 0.5f
-#define CELL_W 5
+#define CELL_FILL_FACTOR 0.8f
 #define FILL_COLOR BLUE
 #define STROKE_COLOR RED
 #define MARKER_COLOR DARKGREEN
@@ -21,14 +25,16 @@ typedef struct {
 Color *pixels;
 size_t pixels_count;
 int grid_c, grid_r;
+int cell_w = 20;
 Arena a = {0};
 Points pts = {0};
 f32 pt_r = 8.f;
 int drag_ind = -1;
-Vector2 cell_size = { CELL_W, CELL_W };
+Vector2 tl, cell_size;
 
 Vector2 qbezier_compute(Vector2 p0, Vector2 c1, Vector2 p2, f32 t)
 {
+    // Q(A, B, C, t) = (A - 2B + C)t^2 + 2(B - A)t + A
     Vector2 a = Vector2Add(Vector2Subtract(p0, Vector2Scale(c1, 2.f)), p2);
     Vector2 b = Vector2Scale(Vector2Subtract(c1, p0), 2.f);
     Vector2 c = p0;
@@ -38,6 +44,16 @@ Vector2 qbezier_compute(Vector2 p0, Vector2 c1, Vector2 p2, f32 t)
         c);
 }
 
+bool f32_close(f32 a, f32 b)
+{
+    return fmaxf(a, b) - fminf(a, b) < 1e-5;
+}
+
+bool is_valid(f32 t, f32 val_x, f32 ray_x)
+{
+    return ((0.f <= t && t < 1.f) && val_x > ray_x);
+}
+
 int qbezier_count_roots_horz(Vector2 p0, Vector2 c1, Vector2 p2, Vector2 ray)
 {
     f32 a = p0.y - 2*c1.y + p2.y;
@@ -45,29 +61,42 @@ int qbezier_count_roots_horz(Vector2 p0, Vector2 c1, Vector2 p2, Vector2 ray)
     f32 c = p0.y - ray.y;
     f32 det = (b*b) - (4*a*c);
 
-    if (det < 0) return 0;
+    if (det < 0.f) return 0;
 
-    int count = 0;
-    if (a != 0.f) {
-        f32 ts[2] = {
-            (-b - sqrtf(det)) / (2.f*a),
-            (-b + sqrtf(det)) / (2.f*a),
-        };
-        for (int k = 0; k < 2; k++) {
-            f32 t = ts[k];
-            Vector2 val = qbezier_compute(p0, c1, p2, t);
-            if ((0.f <= t && t <= 1.f) && val.x > ray.x) count++;
-        }
-        // // Remove double-counted root
-        // if (ts[0] == ts[1]) count = (int)fmaxf(count-1, 0.f);
-    } else {
-        assert(b != 0.f);
-        f32 t = -c/b;
+    int valid_count = 0;
+    if (f32_close(det, 0)) {
+        f32 t = (-b + sqrtf(det)) / (2.f*a);
         Vector2 val = qbezier_compute(p0, c1, p2, t);
-        if ((0.f <= t && t <= 1.f) && val.x > ray.x) count++;
+        if (is_valid(t, val.x, ray.x)) valid_count = 1;
+    } else {
+        if (f32_close(a, 0.f)) {
+            if (f32_close(b, 0.f)) {
+                // There is no $t$ variable to solve for.
+                // at^2 + bt + c = 0 -(becomes)-> c = 0
+                valid_count = 0;
+            } else {
+                f32 t = -c / b;
+                Vector2 val = qbezier_compute(p0, c1, p2, t);
+                if (is_valid(t, val.x, ray.x)) valid_count = 1;
+            }
+        } else {
+            int tn = 2;
+            f32 ts[2] = {
+                (-b + sqrtf(det)) / (2.f*a),
+                (-b - sqrtf(det)) / (2.f*a),
+            };
+            // Due to multiplicity of 2
+            if (ts[0] == ts[1]) tn--;
+
+            for (int k = 0; k < tn; k++) {
+                f32 t = ts[k];
+                Vector2 val = qbezier_compute(p0, c1, p2, t);
+                if (is_valid(t, val.x, ray.x)) valid_count++;
+            }
+        }
     }
 
-    return count;
+    return valid_count;
 }
 
 void render_grid(Vector2 tl, Vector2 cell_size)
@@ -79,8 +108,16 @@ void render_grid(Vector2 tl, Vector2 cell_size)
     for (int r = 0; r < grid_r; r++) {
         for (int c = 0; c < grid_c; c++) {
             Vector2 size = Vector2Scale(cell_size, CELL_FILL_FACTOR);
-            Vector2 p = Vector2Add(pos, Vector2Scale(size, 0.5f));
-            DrawRectangleV(p, size, pixels[TO_INDEX(r, c)]);
+            Vector2 p = Vector2Add(pos, Vector2Scale(Vector2Subtract(cell_size, size), 0.5f));
+            if (pixels[TO_INDEX(r, c)].a != 0) {
+                DrawRectangleV(p, size, pixels[TO_INDEX(r, c)]);
+            } else {
+                DrawRectangleV(p, size, DARKGRAY);
+            }
+            f32 radius = 0.1*size.x;
+            if (radius > 1.f) {
+                DrawCircleV(Vector2Add(pos, Vector2Scale(cell_size, 0.5f)), radius, RED);
+            }
             pos.x += cell_size.x;
         }
         pos.y += cell_size.y;
@@ -121,6 +158,8 @@ void fill_spline_evenodd_grid(void)
     if (pts.count % 2 != 0) return;
 
     int count = 0;
+    int max_c = 0;
+
     for (int r = 0; r < grid_r; r++) {
         for (int c = 0; c < grid_c; c++) {
             count = 0;
@@ -156,30 +195,62 @@ void stroke_spline_grid(Points pts)
     }
 }
 
+void compute_grid(int new_cell_w)
+{
+    // No change detected
+    if (cell_w != new_cell_w) return;
+
+    f32 w = (f32)GetScreenWidth();
+    f32 h = (f32)GetScreenHeight();
+    cell_size = (Vector2){cell_w, cell_w};
+    grid_c = (int)(w / cell_size.x);
+    grid_r = (int)(h / cell_size.y);
+    printf("Cell size: %.2f x %.2f (%d)\n", cell_size.x, cell_size.y, cell_w);
+    printf("Grid size: %d x %d\n\n", grid_c, grid_r);
+    tl = (Vector2) {
+        .x = 0.5f * ((f32)GetScreenWidth() - (grid_c * cell_size.x)),
+        .y = 0.5f * ((f32)GetScreenHeight() - (grid_r * cell_size.y)),
+    };
+    cell_size = (Vector2){cell_w, cell_w};
+
+    size_t old_px_count = pixels_count;
+    pixels_count = grid_c * grid_r * sizeof(*pixels);
+    if (pixels == NULL) {
+        pixels = arena_alloc(&a, pixels_count);
+    } else {
+        pixels = arena_realloc(&a, pixels, old_px_count, pixels_count);
+    }
+}
+
 int main(void)
 {
+#if 0
+    Vector2 p0 = {0,0};
+    Vector2 c1 = {0.5, 0};
+    Vector2 p2 = {1, 1};
+    Vector2 ray = {2e-4, -1e-7};
+    int c = qbezier_count_roots_horz(p0, c1, p2, ray);
+    printf("Count: %d\n", c);
+    return 0;
+#endif
+
     SetTraceLogLevel(LOG_WARNING);
     InitWindow(800, 600, "svg render - cpu");
     SetTargetFPS(60);
 
-    f32 w = (f32)GetScreenWidth();
-    f32 h = (f32)GetScreenHeight();
-    grid_c = (int)(w / cell_size.x);
-    grid_r = (int)(h / cell_size.y);
-    printf("Grid size: %d x %d\n", grid_c, grid_r);
-    Vector2 tl = {
-        .x = 0.5f * ((f32)GetScreenWidth() - (grid_c * cell_size.x)),
-        .y = 0.5f * ((f32)GetScreenHeight() - (grid_r * cell_size.y)),
-    };
-
-    pixels_count = grid_c * grid_r * sizeof(*pixels);
-    pixels = arena_alloc(&a, pixels_count);
+    compute_grid(cell_w);
     clear_grid();
-
     while (!WindowShouldClose()) {
+        if (IsKeyPressed(KEY_UP)) {
+            cell_w += 2;
+            compute_grid(cell_w);
+        } else if (IsKeyPressed(KEY_DOWN)) {
+            cell_w -= 2;
+            compute_grid(cell_w);
+        }
         control_points();
         clear_grid();
-        stroke_spline_grid(pts);
+        // stroke_spline_grid(pts);
         fill_spline_evenodd_grid();
 
         BeginDrawing(); {
@@ -187,6 +258,12 @@ int main(void)
             render_grid(tl, cell_size);
             for (int i = 0; i < pts.count; i++) {
                 DrawCircleV(pts.items[i], pt_r, MARKER_COLOR);
+            }
+            for (int i = 0; i+1 < pts.count; i += 2) {
+                Vector2 p0 = pts.items[i];
+                Vector2 c1 = pts.items[i+1];
+                Vector2 p2 = pts.items[(i+2)%pts.count];
+                DrawSplineSegmentBezierQuadratic(p0, c1, p2, 3.f, GREEN);
             }
             DrawFPS(10, 10);
         } EndDrawing();

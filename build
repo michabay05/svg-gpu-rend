@@ -2,5 +2,8 @@
 
 set -xe
 
-gcc -Wall -Wextra -pedantic -ggdb -I./vendor/include/ main.c \
-    -o main -L. -L./vendor/lib -l:libraylib.a -lm
+gcc -Wall -Wextra -pedantic -ggdb -I./vendor/include/ qb_cpu.c \
+    -o qb_cpu -L. -L./vendor/lib -l:libraylib.a -lm
+
+# gcc -Wall -Wextra -pedantic -ggdb -I./vendor/include/ qb_gpu.c \
+#     -o qb_gpu -L. -L./vendor/lib -l:libraylib.a -lm
