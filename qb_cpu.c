@@ -34,7 +34,8 @@ Vector2 tl, cell_size;
 
 Vector2 qbezier_compute(Vector2 p0, Vector2 c1, Vector2 p2, f32 t)
 {
-    // Q(A, B, C, t) = (A - 2B + C)t^2 + 2(B - A)t + A
+    // Q(A, B, C, t) = (A - 2B + C)t^2 + (2B - 2A)t + A
+    // Q(A, B, C, t) = (    a     )t^2 + (   b   )t + c
     Vector2 a = Vector2Add(Vector2Subtract(p0, Vector2Scale(c1, 2.f)), p2);
     Vector2 b = Vector2Scale(Vector2Subtract(c1, p0), 2.f);
     Vector2 c = p0;
@@ -46,8 +47,11 @@ Vector2 qbezier_compute(Vector2 p0, Vector2 c1, Vector2 p2, f32 t)
 
 Vector2 qbezier_deriv_compute(Vector2 p0, Vector2 c1, Vector2 p2, f32 t)
 {
-    // Q(A, B, C, t) = (A - 2B + C)t^2 + 2(B - A)t + A
-    // Q'(A, B, C, t) = 2(A - 2B + C)t + 2(B - A)
+    // Q(A, B, C, t)  = (A - 2B + C)t^2 + (2B - 2A)t + A
+    // Q(A, B, C, t)  = (    a     )t^2 + (   b   )t + c
+    // -------
+    // Q'(A, B, C, t) = 2(A - 2B + C)t  + (2B - 2A)t
+    // Q'(A, B, C, t) = [     a     ]t  + (   b   )t
 
     Vector2 a = Vector2Add(Vector2Subtract(p0, Vector2Scale(c1, 2.f)), p2);
     Vector2 b = Vector2Scale(Vector2Subtract(c1, p0), 2.f);
@@ -58,11 +62,6 @@ Vector2 qbezier_deriv_compute(Vector2 p0, Vector2 c1, Vector2 p2, f32 t)
 bool f32_close(f32 a, f32 b)
 {
     return fmaxf(a, b) - fminf(a, b) < 1e-6;
-}
-
-bool is_valid(f32 t, f32 val_x, f32 ray_x)
-{
-    return ((0.f <= t && t < 1.f) && val_x > ray_x);
 }
 
 int qbezier_find_roots(f32 a, f32 b, f32 c, f32 *t0, f32 *t1)
@@ -93,60 +92,6 @@ int qbezier_find_roots(f32 a, f32 b, f32 c, f32 *t0, f32 *t1)
     *t0 = ts[0];
     *t1 = ts[1];
     return tn;
-}
-
-int qbezier_count_roots_horz(Vector2 p0, Vector2 c1, Vector2 p2, Vector2 ray)
-{
-    f32 a = p0.y - 2*c1.y + p2.y;
-    f32 b = 2*(c1.y - p0.y);
-    f32 c = p0.y - ray.y;
-    f32 det = (b*b) - (4*a*c);
-
-    if (det < 0.f) return 0;
-
-    int valid_count = 0;
-#if 1
-    f32 ts[2] = {0};
-    int tn = qbezier_find_roots(a, b, c, &ts[0], &ts[1]);
-    for (int i = 0; i < tn; i++) {
-        f32 t = ts[i];
-        Vector2 val = qbezier_compute(p0, c1, p2, t);
-        if (is_valid(t, val.x, ray.x)) valid_count++;
-    }
-#else
-    if (f32_close(det, 0)) {
-        f32 t = (-b + sqrtf(det)) / (2.f*a);
-        Vector2 val = qbezier_compute(p0, c1, p2, t);
-        if (is_valid(t, val.x, ray.x)) valid_count = 1;
-    } else {
-        if (f32_close(a, 0.f)) {
-            if (f32_close(b, 0.f)) {
-                // There is no $t$ variable to solve for.
-                // at^2 + bt + c = 0 -(becomes)-> c = 0
-                valid_count = 0;
-            } else {
-                f32 t = -c / b;
-                Vector2 val = qbezier_compute(p0, c1, p2, t);
-                if (is_valid(t, val.x, ray.x)) valid_count = 1;
-            }
-        } else {
-            int tn = 2;
-            f32 ts[2] = {
-                (-b + sqrtf(det)) / (2.f*a),
-                (-b - sqrtf(det)) / (2.f*a),
-            };
-            // Due to multiplicity of 2
-            if (ts[0] == ts[1]) tn--;
-
-            for (int k = 0; k < tn; k++) {
-                f32 t = ts[k];
-                Vector2 val = qbezier_compute(p0, c1, p2, t);
-                if (is_valid(t, val.x, ray.x)) valid_count++;
-            }
-        }
-    }
-#endif
-    return valid_count;
 }
 
 void render_grid(Vector2 tl, Vector2 cell_size)
@@ -207,6 +152,7 @@ void fill_spline_evenodd_grid(void)
     if (pts.count <= 3) return;
     if (pts.count % 2 != 0) return;
 
+    // Count solutions
     int count = 0;
 
     for (int r = 0; r < grid_r; r++) {
@@ -221,7 +167,21 @@ void fill_spline_evenodd_grid(void)
                 Vector2 c1 = pts.items[i+1];
                 Vector2 p2 = pts.items[(i+2)%pts.count];
 
-                count += qbezier_count_roots_horz(p0, c1, p2, ray);
+                f32 a = p0.y - 2*c1.y + p2.y;
+                f32 b = 2*(c1.y - p0.y);
+                f32 c = p0.y - ray.y;
+
+                f32 det = (b*b) - (4*a*c);
+
+                if (det < 0.f) continue;
+
+                f32 ts[2] = {0};
+                int tn = qbezier_find_roots(a, b, c, &ts[0], &ts[1]);
+                for (int i = 0; i < tn; i++) {
+                    f32 t = ts[i];
+                    Vector2 val = qbezier_compute(p0, c1, p2, t);
+                    if ((0.f <= t && t < 1.f) && val.x > ray.x) count++;
+                }
             }
             // printf("(r = %3d, c = %3d) count = %3d\n", r, c, count);
             if (count % 2 != 0) pixels[TO_INDEX(r, c)] = FILL_COLOR;
@@ -234,11 +194,12 @@ void fill_spline_nonzero_grid(void)
     if (pts.count <= 3) return;
     if (pts.count % 2 != 0) return;
 
-    int count = 0;
+    // Keep track of winding directions
+    int winding = 0;
 
     for (int r = 0; r < grid_r; r++) {
         for (int c = 0; c < grid_c; c++) {
-            count = 0;
+            winding = 0;
             Vector2 ray = {
                 (c+0.5f)*cell_size.x,
                 (r+0.5f)*cell_size.y
@@ -248,9 +209,23 @@ void fill_spline_nonzero_grid(void)
                 Vector2 c1 = pts.items[i+1];
                 Vector2 p2 = pts.items[(i+2)%pts.count];
 
+                f32 a = p0.y - 2*c1.y + p2.y;
+                f32 b = 2*(c1.y - p0.y);
+                f32 c = p0.y - ray.y;
+                f32 ts[2] = {0};
+                int tn = qbezier_find_roots(a, b, c, &ts[0], &ts[1]);
+                for (int i = 0; i < tn; i++) {
+                    f32 t = ts[i];
+                    Vector2 val = qbezier_compute(p0, c1, p2, t);
+                    if ((0.f <= t && t < 1.f) && val.x < ray.x) {
+                        f32 deriv = qbezier_deriv_compute(p0, c1, p2, t).y;
+                        if (deriv > 0) winding++;
+                        if (deriv < 0) winding--;
+                    }
+                }
             }
             // printf("(r = %3d, c = %3d) count = %3d\n", r, c, count);
-            if (count % 2 != 0) pixels[TO_INDEX(r, c)] = FILL_COLOR;
+            if (winding > 0) pixels[TO_INDEX(r, c)] = FILL_COLOR;
         }
     }
 }
@@ -326,8 +301,8 @@ int main(void)
         control_points();
         clear_grid();
         // stroke_spline_grid(pts);
-        fill_spline_evenodd_grid();
-        // fill_spline_nonzero_grid();
+        // fill_spline_evenodd_grid();
+        fill_spline_nonzero_grid();
 
         BeginDrawing(); {
             ClearBackground(BLACK);
